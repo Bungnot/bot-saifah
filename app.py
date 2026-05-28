@@ -4236,6 +4236,31 @@ tr:hover td{{background:#f8fafc}}
 </body></html>"""
 
 
+@app.post("/admin/upload-users")
+def upload_users():
+    if request.args.get("token","") != ADMIN_WEB_TOKEN:
+        return "forbidden", 403
+    try:
+        data = request.get_json(force=True)
+        _atomic_write_json(USERS_JSON, data)
+        global nextCustomerId
+        with with_users_lock():
+            users.clear()
+            for k, v in data.get("users", {}).items():
+                users[k] = {
+                    "uid": v.get("uid", k),
+                    "cid": int(v.get("cid", 0) or 0),
+                    "name": v.get("name", "ผู้เล่น"),
+                    "pictureUrl": v.get("pictureUrl"),
+                    "credit": int(v.get("credit", 0) or 0),
+                }
+            nextCustomerId = int(data.get("nextCustomerId", nextCustomerId))
+        save_users_persist()
+        return {"ok": True, "count": len(users), "nextId": nextCustomerId}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+
 if __name__ == "__main__":
     print(f"Starting Waitress on http://0.0.0.0:{PORT}")
     serve(
