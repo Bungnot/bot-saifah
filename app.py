@@ -4022,6 +4022,185 @@ def backoffice_latest():
     return make_response(json.dumps({"ok": True, "data": p}, ensure_ascii=False),
                          200, {"Content-Type": "application/json; charset=utf-8"})
 
+# ====== ADMIN PANEL ======
+ADMIN_WEB_TOKEN = os.getenv("ADMIN_WEB_TOKEN", "changeme1234")
+
+def _check_web_token():
+    return request.args.get("token","").strip() == ADMIN_WEB_TOKEN
+
+@app.get("/admin")
+def admin_panel():
+    if not _check_web_token():
+        return "forbidden — ใส่ ?token=xxx", 403
+    token = request.args.get("token","")
+    with with_users_lock():
+        data = sorted(users.values(), key=lambda u: u.get("cid", 0))
+    total_credit = sum(u.get("credit",0) for u in data)
+    rows = ""
+    for u in data:
+        cid = u.get("cid","")
+        name = html_escape(u.get("name",""))
+        credit = u.get("credit",0)
+        uid = u.get("uid","")
+        rows += f"""<tr>
+            <td>{cid}</td>
+            <td>{name}</td>
+            <td id="cr_{uid}" style="text-align:right;font-weight:bold">{credit:,}</td>
+            <td>
+                <input type="number" id="amt_{uid}" placeholder="จำนวน" style="width:90px;padding:4px;border:1px solid #ddd;border-radius:4px">
+                <button onclick="adj('{uid}','{name}',1,'{token}')" style="background:#16a34a;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">+บวก</button>
+                <button onclick="adj('{uid}','{name}',-1,'{token}')" style="background:#dc2626;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">-ลบ</button>
+                <button onclick="setCredit('{uid}','{name}','{token}')" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">ตั้งค่า</button>
+            </td>
+        </tr>"""
+
+    import glob
+    backups = sorted(glob.glob(os.path.join(DATA_DIR, "backup_round_*.json")), key=lambda x: os.path.getmtime(x), reverse=True)
+    backup_rows = ""
+    for b in backups:
+        name_b = os.path.basename(b)
+        size = os.path.getsize(b)
+        mtime = datetime.fromtimestamp(os.path.getmtime(b)).strftime("%d/%m/%Y %H:%M")
+        backup_rows += f"<tr><td>{name_b}</td><td>{mtime}</td><td>{size:,} bytes</td><td><a href='/admin/backup/{name_b}?token={token}' target='_blank' style='color:#4f46e5'>ดูรายละเอียด</a></td></tr>"
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Panel</title>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:sans-serif;background:#f1f5f9;margin:0;padding:16px}}
+h2{{color:#1e293b;margin-bottom:4px}}
+.card{{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px #0001}}
+table{{border-collapse:collapse;width:100%}}
+th{{background:#4f46e5;color:#fff;padding:10px 12px;text-align:left;font-size:14px}}
+td{{padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:14px}}
+tr:hover td{{background:#f8fafc}}
+.total{{color:#16a34a;font-weight:bold;font-size:16px;margin-top:8px}}
+.msg{{padding:8px 12px;border-radius:6px;margin:4px 0;font-size:13px}}
+.ok{{background:#dcfce7;color:#166534}}
+.err{{background:#fee2e2;color:#991b1b}}
+#log{{max-height:120px;overflow-y:auto}}
+</style></head>
+<body>
+<h2>🛠️ Admin Panel</h2>
+<div id="log"></div>
+<div class="card">
+<h3 style="margin-top:0">👥 รายชื่อลูกค้า ({len(data)} คน)</h3>
+<div class="total">💰 รวมเครดิต: {total_credit:,} บาท</div>
+<div style="overflow-x:auto;margin-top:12px">
+<table><tr><th>ID</th><th>ชื่อ</th><th>เครดิต</th><th>จัดการ</th></tr>
+{rows}
+</table></div></div>
+<div class="card">
+<h3 style="margin-top:0">📦 ไฟล์ Backup รอบต่างๆ</h3>
+<div style="overflow-x:auto">
+<table><tr><th>ไฟล์</th><th>เวลา</th><th>ขนาด</th><th></th></tr>
+{backup_rows if backup_rows else '<tr><td colspan=4 style="color:#999;text-align:center">ยังไม่มีไฟล์ backup</td></tr>'}
+</table></div></div>
+<script>
+function log(msg, ok) {{
+  const d = document.getElementById('log');
+  const el = document.createElement('div');
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  d.prepend(el);
+  setTimeout(()=>el.remove(), 5000);
+}}
+async function adj(uid, name, sign, token) {{
+  const amt = parseInt(document.getElementById('amt_'+uid).value);
+  if (!amt || amt <= 0) {{ log('กรุณาใส่จำนวนเครดิต', false); return; }}
+  const delta = sign * amt;
+  const r = await fetch('/admin/credit', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{uid,delta,token}})}});
+  const j = await r.json();
+  if (j.ok) {{
+    document.getElementById('cr_'+uid).textContent = j.credit.toLocaleString();
+    log((sign>0?'บวก':'ลบ') + amt.toLocaleString() + ' เครดิต \u2192 ' + name + ' (คงเหลือ ' + j.credit.toLocaleString() + ')', true);
+  }} else log('Error: ' + j.error, false);
+}}
+async function setCredit(uid, name, token) {{
+  const amt = parseInt(document.getElementById('amt_'+uid).value);
+  if (isNaN(amt) || amt < 0) {{ log('กรุณาใส่จำนวนเครดิต', false); return; }}
+  const r = await fetch('/admin/credit', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{uid,set:amt,token}})}});
+  const j = await r.json();
+  if (j.ok) {{
+    document.getElementById('cr_'+uid).textContent = j.credit.toLocaleString();
+    log('ตั้งเครดิต ' + name + ' เป็น ' + j.credit.toLocaleString(), true);
+  }} else log('Error: ' + j.error, false);
+}}
+</script>
+</body></html>"""
+
+@app.post("/admin/credit")
+def admin_credit():
+    try:
+        body = request.get_json(force=True)
+        if body.get("token","") != ADMIN_WEB_TOKEN:
+            return {"ok": False, "error": "forbidden"}, 403
+        uid = body.get("uid","").strip()
+        if not uid:
+            return {"ok": False, "error": "no uid"}, 400
+        with with_users_lock():
+            u = users.get(uid)
+            if not u:
+                return {"ok": False, "error": "user not found"}, 404
+            if "set" in body:
+                u["credit"] = max(0, int(body["set"]))
+            else:
+                delta = int(body.get("delta", 0))
+                u["credit"] = max(0, u.get("credit", 0) + delta)
+            credit = u["credit"]
+        save_users_persist()
+        return {"ok": True, "uid": uid, "credit": credit}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+@app.get("/admin/backup/<filename>")
+def admin_backup_view(filename):
+    if not _check_web_token():
+        return "forbidden", 403
+    if ".." in filename or "/" in filename:
+        return "forbidden", 403
+    path = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(path):
+        return "not found", 404
+    token = request.args.get("token","")
+    with open(path, "rb") as f:
+        data = json.loads(f.read())
+    rows_data = data.get("rows", [])
+    round_no = data.get("round", "-")
+    code = data.get("code", "-")
+    camp = data.get("camp_name", "-")
+    ts = data.get("timestamp", "-")
+    profit = data.get("profit", 0)
+    rows_html = ""
+    for r in rows_data:
+        rname = html_escape(str(r.get("name","-")))
+        stake = r.get("stake", 0)
+        payout = r.get("payout", 0)
+        pl = payout - stake
+        side = r.get("bet","")
+        color = "#16a34a" if pl > 0 else ("#dc2626" if pl < 0 else "#666")
+        rows_html += f"<tr><td>{rname}</td><td>{side}</td><td style='text-align:right'>{stake:,}</td><td style='text-align:right'>{payout:,}</td><td style='text-align:right;color:{color};font-weight:bold'>{'+' if pl>=0 else ''}{pl:,}</td></tr>"
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Backup รอบ {round_no}</title>
+<style>
+body{{font-family:sans-serif;background:#f1f5f9;padding:16px}}
+.card{{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px #0001}}
+table{{border-collapse:collapse;width:100%}}
+th{{background:#4f46e5;color:#fff;padding:10px 12px;text-align:left}}
+td{{padding:8px 12px;border-bottom:1px solid #f1f5f9}}
+</style></head><body>
+<a href="/admin?token={token}" style="color:#4f46e5">\u2190 กลับ Admin Panel</a>
+<div class="card" style="margin-top:12px">
+<h2 style="margin-top:0">📋 รอบที่ {round_no} — {camp}</h2>
+<p>ผล: <b>{code}</b> | เวลา: {ts} | กำไรเจ้ามือ: <b style="color:{'#16a34a' if profit>=0 else '#dc2626'}">{'+ ' if profit>=0 else ''}{profit:,}</b></p>
+<table><tr><th>ชื่อ</th><th>เดิมพัน</th><th>ยอดเล่น</th><th>ได้รับ</th><th>ได้/เสีย</th></tr>
+{rows_html if rows_html else '<tr><td colspan=5 style="color:#999;text-align:center">ไม่มีข้อมูล</td></tr>'}
+</table></div>
+</body></html>"""
+
+
 if __name__ == "__main__":
     print(f"Starting Waitress on http://0.0.0.0:{PORT}")
     serve(
