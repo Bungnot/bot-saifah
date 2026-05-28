@@ -2269,6 +2269,11 @@ def webhook():
 @app.get("/health")
 def health(): return "OK", 200
 
+@app.get("/users")
+def get_users():
+    with with_users_lock():
+        return {"users": list(users.values()), "total": len(users)}
+
 @app.get("/copy/<acct>")
 def copy_page(acct):
     acct = html_escape(acct.strip())
