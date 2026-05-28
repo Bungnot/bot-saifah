@@ -535,7 +535,7 @@ ADMIN_IDS = [s.strip() for s in os.getenv(
 ).split(",") if s.strip()]
 
 BACKOFFICE_GROUP_IDS = {  # กลุ่มหลังบ้าน (รับสรุปพร้อมกำไรสุทธิ)
-    "Cb7e19bad9c4c68ccca708348062ade38",
+    "Cc462daad00c0bc3e15560c86191954a8",
 }
 
 BASE_URL = os.getenv("BASE_URL", "https://example.ngrok-free.app")
@@ -2269,41 +2269,6 @@ def webhook():
 @app.get("/health")
 def health(): return "OK", 200
 
-@app.get("/users")
-def get_users():
-    with with_users_lock():
-        data = sorted(users.values(), key=lambda u: u.get("cid", 0))
-    rows = ""
-    total_credit = 0
-    for u in data:
-        total_credit += u.get("credit", 0)
-        rows += f"""
-        <tr>
-            <td>{u.get('cid','')}</td>
-            <td>{html_escape(u.get('name',''))}</td>
-            <td style="text-align:right">{u.get('credit',0):,}</td>
-            <td style="font-size:11px;color:#888">{u.get('uid','')}</td>
-        </tr>"""
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8">
-<title>รายชื่อลูกค้า</title>
-<style>
-body{{font-family:sans-serif;padding:20px;background:#f9f9f9}}
-h2{{color:#333}}
-table{{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px #0001}}
-th{{background:#4f46e5;color:#fff;padding:10px 14px;text-align:left}}
-td{{padding:9px 14px;border-bottom:1px solid #eee}}
-tr:last-child td{{border-bottom:none}}
-tr:hover td{{background:#f0f0ff}}
-.total{{margin-top:12px;font-weight:bold;color:#333}}
-</style></head><body>
-<h2>👥 รายชื่อลูกค้า ({len(data)} คน)</h2>
-<table><tr><th>ID</th><th>ชื่อ</th><th>เครดิต</th><th>UID</th></tr>
-{rows}
-</table>
-<div class="total">💰 รวมเครดิตทั้งหมด: {total_credit:,} บาท</div>
-</body></html>"""
-
 @app.get("/copy/<acct>")
 def copy_page(acct):
     acct = html_escape(acct.strip())
@@ -3338,6 +3303,9 @@ def on_message(event: MessageEvent):
                 lo_min, lo_max = int(m.group(4)), int(m.group(5))
 
                 st["pairNo"] += 1
+                # ข้าม pairNo ที่ถูก settle ไปแล้ว กันรอบซ้ำหลัง rollback
+                while has_round_action("settle", key, st["pairNo"]):
+                    st["pairNo"] += 1
                 st["totals"] = {"HI": 0, "LO": 0}
                 st["bet_index"] = {}
                 st["pendingCode"] = None
@@ -3353,6 +3321,9 @@ def on_message(event: MessageEvent):
                 note = (re.match(r"^\s*o\b\s*(.*)$", text, re.IGNORECASE).group(1) or "").strip()
 
                 st["pairNo"] += 1
+                # ข้าม pairNo ที่ถูก settle ไปแล้ว กันรอบซ้ำหลัง rollback
+                while has_round_action("settle", key, st["pairNo"]):
+                    st["pairNo"] += 1
                 st["totals"] = {"HI": 0, "LO": 0}
                 st["bet_index"] = {}
                 st["pendingCode"] = None
@@ -4036,5 +4007,12 @@ def backoffice_latest():
                          200, {"Content-Type": "application/json; charset=utf-8"})
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    serve(app, host="0.0.0.0", port=port)
+    print(f"Starting Waitress on http://127.0.0.1:{PORT}")
+    serve(
+        app,
+        host="127.0.0.1",
+        port=PORT,
+        threads=16,
+        connection_limit=200,
+        channel_timeout=60
+    )
