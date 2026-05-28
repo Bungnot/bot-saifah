@@ -2269,6 +2269,70 @@ def webhook():
 @app.get("/health")
 def health(): return "OK", 200
 
+@app.get("/users")
+def get_users():
+    with with_users_lock():
+        data = sorted(users.values(), key=lambda u: u.get("cid", 0))
+    rows = ""
+    total_credit = 0
+    for u in data:
+        total_credit += u.get("credit", 0)
+        rows += f"""
+        <tr>
+            <td>{u.get('cid','')}</td>
+            <td>{html_escape(u.get('name',''))}</td>
+            <td style="text-align:right">{u.get('credit',0):,}</td>
+            <td style="font-size:11px;color:#888">{u.get('uid','')}</td>
+        </tr>"""
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8">
+<title>รายชื่อลูกค้า</title>
+<style>
+body{{font-family:sans-serif;padding:20px;background:#f9f9f9}}
+h2{{color:#333}}
+table{{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px #0001}}
+th{{background:#4f46e5;color:#fff;padding:10px 14px;text-align:left}}
+td{{padding:9px 14px;border-bottom:1px solid #eee}}
+tr:last-child td{{border-bottom:none}}
+tr:hover td{{background:#f0f0ff}}
+.total{{margin-top:12px;font-weight:bold;color:#333}}
+</style></head><body>
+<h2>👥 รายชื่อลูกค้า ({len(data)} คน)</h2>
+<table><tr><th>ID</th><th>ชื่อ</th><th>เครดิต</th><th>UID</th></tr>
+{rows}
+</table>
+<div class="total">💰 รวมเครดิตทั้งหมด: {total_credit:,} บาท</div>
+</body></html>"""
+
+@app.get("/data")
+def get_data_index():
+    import glob
+    files = sorted(glob.glob(os.path.join(DATA_DIR, "*.json")))
+    rows = ""
+    for f in files:
+        name = os.path.basename(f)
+        size = os.path.getsize(f)
+        rows += f"<tr><td><a href='/data/{name}'>{name}</a></td><td>{size:,} bytes</td></tr>"
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>ไฟล์ข้อมูล</title>
+<style>body{{font-family:sans-serif;padding:20px}}table{{border-collapse:collapse;width:100%}}
+th{{background:#4f46e5;color:#fff;padding:10px}}td{{padding:8px;border-bottom:1px solid #eee}}
+a{{color:#4f46e5}}</style></head><body>
+<h2>📁 ไฟล์ข้อมูลทั้งหมด</h2>
+<table><tr><th>ชื่อไฟล์</th><th>ขนาด</th></tr>{rows}</table>
+</body></html>"""
+
+@app.get("/data/<filename>")
+def get_data_file(filename):
+    if ".." in filename or "/" in filename:
+        return "forbidden", 403
+    path = os.path.join(DATA_DIR, filename)
+    if not os.path.exists(path):
+        return "not found", 404
+    with open(path, "rb") as f:
+        data = json.loads(f.read())
+    return data
+
 @app.get("/copy/<acct>")
 def copy_page(acct):
     acct = html_escape(acct.strip())
