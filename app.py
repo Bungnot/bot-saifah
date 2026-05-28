@@ -4166,21 +4166,53 @@ def admin_backup_view(filename):
     token = request.args.get("token","")
     with open(path, "rb") as f:
         data = json.loads(f.read())
-    rows_data = data.get("rows", [])
     round_no = data.get("round", "-")
     code = data.get("code", "-")
     camp = data.get("camp_name", "-")
     ts = data.get("timestamp", "-")
     profit = data.get("profit", 0)
+
+    # ดึงบิลจาก room_state.bet_index (snapshot ก่อนสรุป)
+    bet_index = (data.get("room_state") or {}).get("bet_index", {})
+    # ดึง users snapshot เพื่อหาชื่อ
+    users_snap = data.get("users", {})
+
     rows_html = ""
-    for r in rows_data:
-        rname = html_escape(str(r.get("name","-")))
-        stake = r.get("stake", 0)
-        payout = r.get("payout", 0)
-        pl = payout - stake
-        side = r.get("bet","")
-        color = "#16a34a" if pl > 0 else ("#dc2626" if pl < 0 else "#666")
-        rows_html += f"<tr><td>{rname}</td><td>{side}</td><td style='text-align:right'>{stake:,}</td><td style='text-align:right'>{payout:,}</td><td style='text-align:right;color:{color};font-weight:bold'>{'+' if pl>=0 else ''}{pl:,}</td></tr>"
+    total_stake_hi = 0
+    total_stake_lo = 0
+    if bet_index:
+        bets = sorted(bet_index.values(), key=lambda b: b.get("name",""))
+        for b in bets:
+            buid = b.get("uid","")
+            # ชื่อจาก users snapshot หรือ bet_index
+            uname = (users_snap.get(buid) or {}).get("name") or b.get("name","-")
+            rname = html_escape(str(uname))
+            stake = b.get("amount", 0)
+            side = b.get("side","")
+            side_th = "สูง 🔵" if side == "HI" else "ต่ำ 🔴"
+            side_color = "#1d4ed8" if side == "HI" else "#dc2626"
+            if side == "HI":
+                total_stake_hi += stake
+            else:
+                total_stake_lo += stake
+            rows_html += f"<tr><td>{rname}</td><td style='color:{side_color};font-weight:bold'>{side_th}</td><td style='text-align:right'>{stake:,}</td></tr>"
+    
+    total_all = total_stake_hi + total_stake_lo
+    summary_html = f"""
+    <tr style='background:#f8fafc;font-weight:bold'>
+        <td colspan=2 style='color:#1d4ed8'>รวมสูง</td>
+        <td style='text-align:right;color:#1d4ed8'>{total_stake_hi:,}</td>
+    </tr>
+    <tr style='background:#f8fafc;font-weight:bold'>
+        <td colspan=2 style='color:#dc2626'>รวมต่ำ</td>
+        <td style='text-align:right;color:#dc2626'>{total_stake_lo:,}</td>
+    </tr>
+    <tr style='background:#f1f5f9;font-weight:bold'>
+        <td colspan=2>รวมทั้งหมด ({len(bet_index)} บิล)</td>
+        <td style='text-align:right'>{total_all:,}</td>
+    </tr>
+    """
+
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Backup รอบ {round_no}</title>
@@ -4190,13 +4222,16 @@ body{{font-family:sans-serif;background:#f1f5f9;padding:16px}}
 table{{border-collapse:collapse;width:100%}}
 th{{background:#4f46e5;color:#fff;padding:10px 12px;text-align:left}}
 td{{padding:8px 12px;border-bottom:1px solid #f1f5f9}}
+tr:hover td{{background:#f8fafc}}
 </style></head><body>
 <a href="/admin?token={token}" style="color:#4f46e5">\u2190 กลับ Admin Panel</a>
 <div class="card" style="margin-top:12px">
 <h2 style="margin-top:0">📋 รอบที่ {round_no} — {camp}</h2>
-<p>ผล: <b>{code}</b> | เวลา: {ts} | กำไรเจ้ามือ: <b style="color:{'#16a34a' if profit>=0 else '#dc2626'}">{'+ ' if profit>=0 else ''}{profit:,}</b></p>
-<table><tr><th>ชื่อ</th><th>เดิมพัน</th><th>ยอดเล่น</th><th>ได้รับ</th><th>ได้/เสีย</th></tr>
-{rows_html if rows_html else '<tr><td colspan=5 style="color:#999;text-align:center">ไม่มีข้อมูล</td></tr>'}
+<p>ผล: <b>{code}</b> | กำไรเจ้ามือ: <b style="color:{'#16a34a' if profit>=0 else '#dc2626'}">{'+' if profit>=0 else ''}{profit:,}</b></p>
+<table>
+<tr><th>ชื่อ</th><th>ฝั่ง</th><th>ยอดเล่น</th></tr>
+{rows_html if rows_html else '<tr><td colspan=3 style="color:#999;text-align:center">ไม่มีข้อมูลบิล</td></tr>'}
+{summary_html}
 </table></div>
 </body></html>"""
 
