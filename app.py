@@ -4001,12 +4001,5 @@ def backoffice_latest():
                          200, {"Content-Type": "application/json; charset=utf-8"})
 
 if __name__ == "__main__":
-    print(f"Starting Waitress on http://127.0.0.1:{PORT}")
-    serve(
-        app,
-        host="127.0.0.1",
-        port=PORT,
-        threads=16,
-        connection_limit=200,
-        channel_timeout=60
-    )
+    port = int(os.getenv("PORT", "5000"))
+    serve(app, host="0.0.0.0", port=port)
