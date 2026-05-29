@@ -4028,107 +4028,279 @@ ADMIN_WEB_TOKEN = os.getenv("ADMIN_WEB_TOKEN", "changeme1234")
 def _check_web_token():
     return request.args.get("token","").strip() == ADMIN_WEB_TOKEN
 
+@app.get("/admin/cm-data")
+def admin_cm_data():
+    if not _check_web_token():
+        return {"ok": False}, 403
+    with with_rooms_lock():
+        snapshot = [(rk, dict(stx)) for rk, stx in rooms.items()]
+    all_bets, total_hi, total_lo = [], 0, 0
+    for rk, stx in snapshot:
+        pair_no = stx.get("pairNo", 0)
+        camp = current_camp(stx)
+        for b in stx.get("bet_index", {}).values():
+            buid = b.get("uid","")
+            cid = users.get(buid, {}).get("cid", "-") if buid else "-"
+            side = b.get("side","")
+            amt = b.get("amount", 0)
+            all_bets.append({"cid": cid, "name": b.get("name",""), "side": side, "amount": amt, "round": pair_no, "camp": camp})
+            if side == "HI": total_hi += amt
+            else: total_lo += amt
+    all_bets.sort(key=lambda x: -x["amount"])
+    return {"ok": True, "bets": all_bets, "total_hi": total_hi, "total_lo": total_lo, "total": total_hi + total_lo}
+
+@app.get("/admin/stats")
+def admin_stats():
+    if not _check_web_token():
+        return {"ok": False}, 403
+    with with_users_lock():
+        total_users = len(users)
+        credit_users = sum(1 for u in users.values() if u.get("credit", 0) > 0)
+        total_credit = sum(u.get("credit", 0) for u in users.values())
+    profit = METRICS.get("profit_sum", 0)
+    loss = METRICS.get("loss_sum", 0)
+    p = load_last_settle()
+    last_round = {}
+    if p:
+        last_round = {"round": p.get("round"), "camp": p.get("camp_name",""), "code": p.get("code",""), "profit": p.get("profit", 0), "ts": p.get("ts_iso",""), "players": len(p.get("rows") or [])}
+    return {"ok": True, "metrics": {"profit": profit, "loss": loss, "net": profit - loss}, "users": {"total": total_users, "with_credit": credit_users, "total_credit": total_credit}, "last_round": last_round}
+
 @app.get("/admin")
 def admin_panel():
     if not _check_web_token():
         return "forbidden — ใส่ ?token=xxx", 403
     token = request.args.get("token","")
+    show_all = request.args.get("all","0") == "1"
     with with_users_lock():
-        data = sorted(users.values(), key=lambda u: u.get("cid", 0))
-    total_credit = sum(u.get("credit",0) for u in data)
+        all_users = sorted(users.values(), key=lambda u: (-u.get("credit",0), u.get("cid",0)))
+    data = all_users if show_all else [u for u in all_users if u.get("credit",0) > 0]
+    total_credit = sum(u.get("credit",0) for u in all_users)
+    credit_users = len([u for u in all_users if u.get("credit",0) > 0])
+
     rows = ""
     for u in data:
         cid = u.get("cid","")
         name = html_escape(u.get("name",""))
         credit = u.get("credit",0)
         uid = u.get("uid","")
-        rows += f"""<tr>
-            <td>{cid}</td>
-            <td>{name}</td>
-            <td id="cr_{uid}" style="text-align:right;font-weight:bold">{credit:,}</td>
-            <td>
-                <input type="number" id="amt_{uid}" placeholder="จำนวน" style="width:90px;padding:4px;border:1px solid #ddd;border-radius:4px">
-                <button onclick="adj('{uid}','{name}',1,'{token}')" style="background:#16a34a;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">+บวก</button>
-                <button onclick="adj('{uid}','{name}',-1,'{token}')" style="background:#dc2626;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">-ลบ</button>
-                <button onclick="setCredit('{uid}','{name}','{token}')" style="background:#7c3aed;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer">ตั้งค่า</button>
-            </td>
-        </tr>"""
+        cc = "#fbbf24" if credit > 0 else "#64748b"
+        rows += f'<tr><td class="c1">{cid}</td><td class="c2">{name}</td><td id="cr_{uid}" class="c3" style="color:{cc}">{credit:,}</td><td class="c4"><button onclick="showM(\'{uid}\',\'{name}\',\'add\')" class="ba">+</button><button onclick="showM(\'{uid}\',\'{name}\',\'sub\')" class="bs">-</button><button onclick="showM(\'{uid}\',\'{name}\',\'set\')" class="bx">✏</button></td></tr>'
 
     import glob
     backups = sorted(glob.glob(os.path.join(DATA_DIR, "backup_round_*.json")), key=lambda x: os.path.getmtime(x), reverse=True)
-    backup_rows = ""
+    bkrows = ""
     for b in backups:
-        name_b = os.path.basename(b)
-        size = os.path.getsize(b)
-        mtime = datetime.fromtimestamp(os.path.getmtime(b)).strftime("%d/%m/%Y %H:%M")
-        backup_rows += f"<tr><td>{name_b}</td><td>{mtime}</td><td>{size:,} bytes</td><td><a href='/admin/backup/{name_b}?token={token}' target='_blank' style='color:#4f46e5'>ดูรายละเอียด</a></td></tr>"
+        nb = os.path.basename(b)
+        mt = datetime.fromtimestamp(os.path.getmtime(b)).strftime("%d/%m %H:%M")
+        sz = os.path.getsize(b)
+        bkrows += f'<tr><td class="bf">{nb}</td><td class="bt">{mt}</td><td class="bt">{sz:,}B</td><td><a href="/admin/backup/{nb}?token={token}" target="_blank" class="bv">🔍</a></td></tr>'
+
+    turl = f"/admin?token={token}&all={'0' if show_all else '1'}"
+    tlbl = "ดูทั้งหมด" if not show_all else "มีเครดิต"
 
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Admin Panel</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>⚡ Admin</title>
 <style>
-*{{box-sizing:border-box}}
-body{{font-family:sans-serif;background:#f1f5f9;margin:0;padding:16px}}
-h2{{color:#1e293b;margin-bottom:4px}}
-.card{{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px #0001}}
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:'Sarabun',sans-serif;background:#0f0c29;min-height:100vh;color:#e2e8f0;font-size:14px}}
+.hdr{{background:linear-gradient(135deg,#667eea,#764ba2);padding:14px 16px;position:sticky;top:0;z-index:10;box-shadow:0 4px 20px rgba(0,0,0,.4)}}
+.hdr h1{{font-size:17px;font-weight:700}}
+.hdr p{{font-size:11px;opacity:.7;margin-top:2px}}
+.wrap{{padding:12px}}
+.stats{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}}
+.stat{{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;text-align:center}}
+.sv{{font-size:22px;font-weight:700;background:linear-gradient(135deg,#f6d365,#fda085);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.sl{{font-size:10px;opacity:.6;margin-top:2px}}
+.card{{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:14px;margin-bottom:12px}}
+.ct{{font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}}
+.tag{{background:rgba(102,126,234,.3);color:#a5b4fc;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-decoration:none}}
+.pg{{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}}
+.pi{{border-radius:10px;padding:10px;text-align:center}}
+.piv{{font-size:16px;font-weight:700;margin-top:3px}}
+.pil{{font-size:10px;opacity:.65}}
+.pig{{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.25)}}
+.pir{{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.25)}}
+.pin{{background:rgba(102,126,234,.15);border:1px solid rgba(102,126,234,.25)}}
+.live{{display:inline-block;width:7px;height:7px;background:#22c55e;border-radius:50%;animation:pulse 1.5s infinite;margin-left:4px;vertical-align:middle}}
+@keyframes pulse{{0%,100%{{box-shadow:0 0 0 0 rgba(34,197,94,.5)}}50%{{box-shadow:0 0 0 5px rgba(34,197,94,0)}}}}
+.lr{{background:rgba(255,255,255,.04);border-radius:10px;padding:10px;display:none}}
+.lrr{{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}}
+.lrr:last-child{{border:none}}
+.cms{{display:flex;gap:8px;margin-bottom:8px}}
+.cmc{{flex:1;border-radius:10px;padding:8px;text-align:center;font-size:12px;font-weight:700}}
+.cmh{{background:rgba(59,130,246,.2);border:1px solid rgba(59,130,246,.3);color:#60a5fa}}
+.cml{{background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.3);color:#f87171}}
+.cmt{{background:rgba(251,191,36,.2);border:1px solid rgba(251,191,36,.3);color:#fbbf24}}
 table{{border-collapse:collapse;width:100%}}
-th{{background:#4f46e5;color:#fff;padding:10px 12px;text-align:left;font-size:14px}}
-td{{padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:14px}}
-tr:hover td{{background:#f8fafc}}
-.total{{color:#16a34a;font-weight:bold;font-size:16px;margin-top:8px}}
-.msg{{padding:8px 12px;border-radius:6px;margin:4px 0;font-size:13px}}
-.ok{{background:#dcfce7;color:#166534}}
-.err{{background:#fee2e2;color:#991b1b}}
-#log{{max-height:120px;overflow-y:auto}}
-</style></head>
-<body>
-<h2>🛠️ Admin Panel</h2>
+th{{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:9px 8px;font-size:11px;font-weight:700;text-align:left;white-space:nowrap}}
+th:first-child{{border-radius:8px 0 0 0}}th:last-child{{border-radius:0 8px 0 0}}
+td{{padding:8px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}}
+tr:active td{{background:rgba(255,255,255,.04)}}
+.c1{{color:#64748b;font-size:11px;width:36px}}
+.c2{{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}}
+.c3{{text-align:right;font-weight:700;font-size:15px;width:80px}}
+.c4{{width:90px;white-space:nowrap}}
+.ba{{background:linear-gradient(135deg,#059669,#34d399);color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:16px;font-weight:700;margin-right:2px;cursor:pointer}}
+.bs{{background:linear-gradient(135deg,#dc2626,#f87171);color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:16px;font-weight:700;margin-right:2px;cursor:pointer}}
+.bx{{background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer}}
+.bv{{background:linear-gradient(135deg,#0891b2,#38bdf8);color:#fff;padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none}}
+.bf{{font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.bt{{font-size:11px;color:#64748b;white-space:nowrap}}
+.hi{{color:#60a5fa;font-weight:700;font-size:12px}}
+.lo{{color:#f87171;font-weight:700;font-size:12px}}
+.empty{{text-align:center;padding:20px;opacity:.4;font-size:13px}}
+#log{{margin-bottom:8px}}
+.msg{{padding:9px 12px;border-radius:10px;margin:3px 0;font-size:12px;font-weight:500}}
+.ok{{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.25);color:#4ade80}}
+.err{{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.25);color:#f87171}}
+.rbtn{{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#94a3b8;padding:5px 10px;border-radius:8px;font-size:11px;cursor:pointer;font-family:'Sarabun',sans-serif}}
+.ov{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);z-index:50;align-items:flex-end;justify-content:center}}
+.ov.show{{display:flex}}
+.modal{{background:linear-gradient(180deg,#1e1b4b,#1a1a2e);border:1px solid rgba(255,255,255,.12);border-radius:20px 20px 0 0;padding:24px 20px;width:100%;max-width:480px}}
+.modal h3{{font-size:17px;font-weight:700;margin-bottom:4px;background:linear-gradient(135deg,#818cf8,#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.modal p{{font-size:12px;opacity:.55;margin-bottom:14px}}
+.modal input{{width:100%;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.15);border-radius:12px;padding:14px;color:#fff;font-size:18px;margin-bottom:14px;outline:none;font-family:'Sarabun',sans-serif}}
+.modal input:focus{{border-color:#818cf8}}
+.mbtns{{display:flex;gap:8px}}
+.mc{{flex:2;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;padding:14px;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;font-family:'Sarabun',sans-serif}}
+.mx{{flex:1;background:rgba(255,255,255,.08);color:#94a3b8;border:none;padding:14px;border-radius:12px;font-size:15px;cursor:pointer;font-family:'Sarabun',sans-serif}}
+</style></head><body>
+<div class="hdr"><h1>⚡ Admin Panel — บั้งไฟสายฟ้า</h1><p id="upd">กำลังโหลด...</p></div>
+<div class="wrap">
 <div id="log"></div>
+<div class="stats">
+  <div class="stat"><div class="sv">{len(all_users)}</div><div class="sl">👥 ลูกค้าทั้งหมด</div></div>
+  <div class="stat"><div class="sv" id="s1">{credit_users}</div><div class="sl">💎 มีเครดิต</div></div>
+  <div class="stat"><div class="sv" id="s2">{total_credit:,}</div><div class="sl">💰 รวมเครดิต</div></div>
+  <div class="stat"><div class="sv">{len(backups)}</div><div class="sl">📦 Backup</div></div>
+</div>
 <div class="card">
-<h3 style="margin-top:0">👥 รายชื่อลูกค้า ({len(data)} คน)</h3>
-<div class="total">💰 รวมเครดิต: {total_credit:,} บาท</div>
-<div style="overflow-x:auto;margin-top:12px">
-<table><tr><th>ID</th><th>ชื่อ</th><th>เครดิต</th><th>จัดการ</th></tr>
-{rows}
-</table></div></div>
+  <div class="ct">📈 กำไรสะสม <span class="live"></span> <button class="rbtn" onclick="fetchStats()">🔄</button></div>
+  <div class="pg">
+    <div class="pi pig"><div class="pil">💚 กำไรรวม</div><div class="piv" id="pp">-</div></div>
+    <div class="pi pir"><div class="pil">🔴 ขาดทุน</div><div class="piv" id="pl">-</div></div>
+    <div class="pi pin"><div class="pil">⚡ สุทธิ</div><div class="piv" id="pn">-</div></div>
+  </div>
+  <div class="lr" id="lr">
+    <div class="lrr"><span style="opacity:.6">รอบที่</span><span id="lr1">-</span></div>
+    <div class="lrr"><span style="opacity:.6">ค่าย</span><span id="lr2">-</span></div>
+    <div class="lrr"><span style="opacity:.6">ผล</span><span id="lr3">-</span></div>
+    <div class="lrr"><span style="opacity:.6">กำไรรอบนี้</span><span id="lr4">-</span></div>
+    <div class="lrr"><span style="opacity:.6">ผู้เล่น</span><span id="lr5">-</span></div>
+    <div class="lrr"><span style="opacity:.6">เวลา</span><span id="lr6" style="font-size:11px">-</span></div>
+  </div>
+</div>
 <div class="card">
-<h3 style="margin-top:0">📦 ไฟล์ Backup รอบต่างๆ</h3>
-<div style="overflow-x:auto">
-<table><tr><th>ไฟล์</th><th>เวลา</th><th>ขนาด</th><th></th></tr>
-{backup_rows if backup_rows else '<tr><td colspan=4 style="color:#999;text-align:center">ยังไม่มีไฟล์ backup</td></tr>'}
-</table></div></div>
+  <div class="ct">🎯 บิลปัจจุบัน <span class="live"></span> <button class="rbtn" onclick="fetchCM()">🔄</button></div>
+  <div class="cms">
+    <div class="cmc cmh">🔵 สูง<br><span id="ch">-</span></div>
+    <div class="cmc cml">🔴 ต่ำ<br><span id="cl">-</span></div>
+    <div class="cmc cmt">⚡ รวม<br><span id="ctot">-</span></div>
+  </div>
+  <div style="overflow-x:auto"><table id="cmt2">
+    <tr><th>ID</th><th>ชื่อ</th><th>ฝั่ง</th><th style="text-align:right">ยอด</th><th>รอบ</th></tr>
+    <tr><td colspan=5 class="empty">กำลังโหลด...</td></tr>
+  </table></div>
+</div>
+<div class="card">
+  <div class="ct">👥 {"ทั้งหมด" if show_all else "มีเครดิต"} ({len(data)} คน) <a href="{turl}" class="tag">{tlbl}</a></div>
+  <div style="overflow-x:auto"><table>
+    <tr><th>ID</th><th>ชื่อ</th><th style="text-align:right">เครดิต</th><th>จัดการ</th></tr>
+    {rows if rows else '<tr><td colspan=4 class="empty">ไม่มีลูกค้าที่มีเครดิต</td></tr>'}
+  </table></div>
+</div>
+<div class="card">
+  <div class="ct">📦 Backup รอบต่างๆ</div>
+  <div style="overflow-x:auto"><table>
+    <tr><th>ไฟล์</th><th>เวลา</th><th>ขนาด</th><th></th></tr>
+    {bkrows if bkrows else '<tr><td colspan=4 class="empty">ยังไม่มี backup</td></tr>'}
+  </table></div>
+</div>
+</div>
+<div class="ov" id="ov" onclick="if(event.target===this)closeM()">
+  <div class="modal">
+    <h3 id="mt">เติมเครดิต</h3><p id="md">กรุณาใส่จำนวน</p>
+    <input type="number" id="ma" placeholder="จำนวน (บาท)" inputmode="numeric">
+    <div class="mbtns"><button class="mx" onclick="closeM()">ยกเลิก</button><button class="mc" id="mc">ยืนยัน ✓</button></div>
+  </div>
+</div>
 <script>
-function log(msg, ok) {{
-  const d = document.getElementById('log');
-  const el = document.createElement('div');
-  el.className = 'msg ' + (ok ? 'ok' : 'err');
-  el.textContent = msg;
-  d.prepend(el);
-  setTimeout(()=>el.remove(), 5000);
+const TK='{token}';
+let _u='',_n='',_m='';
+function showM(u,n,m){{_u=u;_n=n;_m=m;
+  const t={{add:'💚 เติมเครดิต',sub:'🔴 ลบเครดิต',set:'✏️ ตั้งค่า'}};
+  document.getElementById('mt').textContent=t[m];
+  document.getElementById('md').textContent=(m==='add'?'เติมให้ ':m==='sub'?'ลบจาก ':'ตั้งค่าของ ')+n;
+  document.getElementById('ma').value='';
+  document.getElementById('ov').classList.add('show');
+  setTimeout(()=>document.getElementById('ma').focus(),150);
 }}
-async function adj(uid, name, sign, token) {{
-  const amt = parseInt(document.getElementById('amt_'+uid).value);
-  if (!amt || amt <= 0) {{ log('กรุณาใส่จำนวนเครดิต', false); return; }}
-  const delta = sign * amt;
-  const r = await fetch('/admin/credit', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{uid,delta,token}})}});
-  const j = await r.json();
-  if (j.ok) {{
-    document.getElementById('cr_'+uid).textContent = j.credit.toLocaleString();
-    log((sign>0?'บวก':'ลบ') + amt.toLocaleString() + ' เครดิต \u2192 ' + name + ' (คงเหลือ ' + j.credit.toLocaleString() + ')', true);
-  }} else log('Error: ' + j.error, false);
+function closeM(){{document.getElementById('ov').classList.remove('show')}}
+document.getElementById('mc').onclick=async function(){{
+  const amt=parseInt(document.getElementById('ma').value);
+  if(isNaN(amt)||amt<0){{log('ใส่จำนวนให้ถูกต้อง',false);return;}}
+  let body={{uid:_u,token:TK}};
+  if(_m==='add')body.delta=amt;else if(_m==='sub')body.delta=-amt;else body.set=amt;
+  const r=await fetch('/admin/credit',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const j=await r.json();closeM();
+  if(j.ok){{
+    const el=document.getElementById('cr_'+_u);
+    if(el){{el.textContent=j.credit.toLocaleString('th-TH');el.style.color=j.credit>0?'#fbbf24':'#64748b';}}
+    log({{add:'เติม',sub:'ลบ',set:'ตั้งค่า'}}[_m]+' '+amt.toLocaleString()+' → '+_n+' (เหลือ '+j.credit.toLocaleString()+')',true);
+  }}else log('Error: '+j.error,false);
+}};
+document.getElementById('ma').addEventListener('keydown',e=>{{if(e.key==='Enter')document.getElementById('mc').click()}});
+function log(msg,ok){{
+  const d=document.getElementById('log');const el=document.createElement('div');
+  el.className='msg '+(ok?'ok':'err');el.textContent=msg;
+  d.prepend(el);setTimeout(()=>el.remove(),5000);
 }}
-async function setCredit(uid, name, token) {{
-  const amt = parseInt(document.getElementById('amt_'+uid).value);
-  if (isNaN(amt) || amt < 0) {{ log('กรุณาใส่จำนวนเครดิต', false); return; }}
-  const r = await fetch('/admin/credit', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{uid,set:amt,token}})}});
-  const j = await r.json();
-  if (j.ok) {{
-    document.getElementById('cr_'+uid).textContent = j.credit.toLocaleString();
-    log('ตั้งเครดิต ' + name + ' เป็น ' + j.credit.toLocaleString(), true);
-  }} else log('Error: ' + j.error, false);
+function fs(n){{return n>=0?'+'+n.toLocaleString('th-TH'):n.toLocaleString('th-TH');}}
+async function fetchStats(){{
+  try{{
+    const r=await fetch('/admin/stats?token='+TK);const j=await r.json();if(!j.ok)return;
+    const m=j.metrics,nv=m.net;
+    document.getElementById('pp').textContent=(m.profit||0).toLocaleString('th-TH');
+    document.getElementById('pl').textContent=(m.loss||0).toLocaleString('th-TH');
+    const ne=document.getElementById('pn');ne.textContent=fs(nv);ne.style.color=nv>=0?'#4ade80':'#f87171';
+    if(j.users){{document.getElementById('s1').textContent=j.users.with_credit;document.getElementById('s2').textContent=j.users.total_credit.toLocaleString('th-TH');}}
+    const lr=j.last_round;
+    if(lr&&lr.round){{
+      document.getElementById('lr').style.display='block';
+      document.getElementById('lr1').textContent=lr.round;
+      document.getElementById('lr2').textContent=lr.camp||'-';
+      document.getElementById('lr3').textContent=lr.code||'-';
+      document.getElementById('lr4').textContent=fs(lr.profit||0)+' บาท';
+      document.getElementById('lr5').textContent=(lr.players||0)+' คน';
+      document.getElementById('lr6').textContent=lr.ts||'-';
+    }}
+    document.getElementById('upd').textContent='อัปเดต: '+new Date().toLocaleTimeString('th-TH');
+  }}catch(e){{}}
 }}
+async function fetchCM(){{
+  try{{
+    const r=await fetch('/admin/cm-data?token='+TK);const j=await r.json();if(!j.ok)return;
+    document.getElementById('ch').textContent=(j.total_hi||0).toLocaleString('th-TH')+' ('+j.bets.filter(b=>b.side==='HI').length+')';
+    document.getElementById('cl').textContent=(j.total_lo||0).toLocaleString('th-TH')+' ('+j.bets.filter(b=>b.side==='LO').length+')';
+    document.getElementById('ctot').textContent=(j.total||0).toLocaleString('th-TH');
+    const tb=document.getElementById('cmt2');
+    if(!j.bets||!j.bets.length){{tb.innerHTML='<tr><th>ID</th><th>ชื่อ</th><th>ฝั่ง</th><th style="text-align:right">ยอด</th><th>รอบ</th></tr><tr><td colspan=5 class="empty">ยังไม่มีบิล</td></tr>';return;}}
+    let h='<tr><th>ID</th><th>ชื่อ</th><th>ฝั่ง</th><th style="text-align:right">ยอด</th><th>รอบ</th></tr>';
+    for(const b of j.bets){{
+      const sc=b.side==='HI'?'hi':'lo';
+      h+=`<tr><td class="c1">${{b.cid}}</td><td class="c2">${{b.name}}</td><td class="${{sc}}">${{b.side==='HI'?'🔵 สูง':'🔴 ต่ำ'}}</td><td style="text-align:right;font-weight:700">${{b.amount.toLocaleString('th-TH')}}</td><td style="font-size:11px;color:#64748b">${{b.round}}</td></tr>`;
+    }}
+    tb.innerHTML=h;
+  }}catch(e){{}}
+}}
+fetchStats();fetchCM();
+setInterval(fetchStats,10000);
+setInterval(fetchCM,8000);
 </script>
 </body></html>"""
+
 
 @app.post("/admin/credit")
 def admin_credit():
