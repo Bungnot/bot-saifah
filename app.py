@@ -535,7 +535,7 @@ ADMIN_IDS = [s.strip() for s in os.getenv(
 ).split(",") if s.strip()]
 
 BACKOFFICE_GROUP_IDS = {  # กลุ่มหลังบ้าน (รับสรุปพร้อมกำไรสุทธิ)
-    "Cb7e19bad9c4c68ccca708348062ade38",
+    "C4351f9753d3cf8fd8b6bf03effa5a7c8,C3f130d49fc779d8dab33bccf9802d05e",
 }
 
 BASE_URL = os.getenv("BASE_URL", "https://example.ngrok-free.app")
