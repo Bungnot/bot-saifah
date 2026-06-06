@@ -24,12 +24,12 @@ from contextlib import contextmanager
 R_PARSE_BET = re.compile(r"^([ลสยต])\s*[\/\s]*([0-9]+)$", re.IGNORECASE)
 R_O         = re.compile(r"^\s*o\b", re.IGNORECASE)
 R_ANN = re.compile(
-    r"^\s*([^\s].+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
-    re.IGNORECASE
+    r"^\s*([^\s].+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*[-/\s]*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
+    re.IGNORECASE | re.DOTALL
 )
 R_O_ANN = re.compile(
-    r"^\s*o\s+(.+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
-    re.IGNORECASE
+    r"^\s*o\s+(.+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*[-/\s]*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
+    re.IGNORECASE | re.DOTALL
 )
 R_CLEAR     = re.compile(r"^(clear|reset)\b", re.IGNORECASE)
 R_CM        = re.compile(r"^cm$", re.IGNORECASE)
@@ -2750,12 +2750,19 @@ def on_message(event: MessageEvent):
 
         # [FIXED] ตรวจสอบ Cooldown ภายใน Lock
         if not is_admin(uid):
-            whitelist = {"add", "c", "กต", "บช", "x", "xx", "x*", "ถอน", "วิธีเล่น", "วิธีการเล่น", "เล่น"}
+            # [FIXED] เพิ่ม "C" (ตัวพิมพ์ใหญ่) เข้าไปใน whitelist ด้วย เพราะ user อาจพิมพ์ C ใหญ่
+            whitelist = {"add", "c", "C", "กต", "บช", "x", "xx", "x*", "ถอน", "วิธีเล่น", "วิธีการเล่น", "เล่น"}
             text_preview = text.lower()
+            # head เป็นตัวพิมพ์เล็กเสมอ ดังนั้น whitelist ต้องเป็นตัวพิมพ์เล็กด้วย หรือแปลง head เป็นแบบตรงกับ whitelist
             head = text_preview.split(" ", 1)[0] if text_preview else ""
+            # ถ้า text คือ "C" -> text.lower() คือ "c" -> head คือ "c"
+            # แต่เผื่อไว้ เช็คจาก text ตรงๆ หรือ head ตรงๆ
             scope_key = f"{uid}:{key}"
 
-            if head not in whitelist:
+            # แปลง whitelist ให้เป็น lower case ทั้งหมดเพื่อความชัวร์ (แม้ว่าใน set จะมีตัวเล็กอยู่แล้ว)
+            whitelist_lower = {w.lower() for w in whitelist}
+
+            if head not in whitelist_lower and text.strip().lower() not in whitelist_lower:
                 if not _should_reply_now(scope_key):
                     # เงียบ: ไม่ตอบและไม่ประมวลผลคำสั่ง เพื่อกันรัวจริง ๆ
                     return
@@ -3233,7 +3240,8 @@ def on_message(event: MessageEvent):
 
 
 
-        if re.match(r"^c\b", text, re.IGNORECASE):
+        # [FIXED] ใช้ strip() และตรวจสอบให้ครอบคลุมทั้ง C และ c รวมถึงกรณีที่อาจมีช่องว่าง
+        if re.match(r"^c\b", text.strip(), re.IGNORECASE) or text.strip().lower() == "c":
             target_uid = first_mentioned_uid(event)
 
             # แอดมินดูบัตร/ID ของลูกค้าที่ถูกแท็ก
@@ -3248,7 +3256,7 @@ def on_message(event: MessageEvent):
                 safe_reply(event, flex_customer_card(st, u)); return
 
             # ลูกค้าดูบัตรของตัวเอง
-            if text.lower() == "c":
+            if text.strip().lower() == "c":
                 u = users.get(uid)
                 if not u:
                     safe_reply(event, TextSendMessage("พิมพ์ add เพื่อรับไอดีก่อน"))
@@ -3264,8 +3272,8 @@ def on_message(event: MessageEvent):
             safe_reply(event, TextSendMessage(rules_text())); return
 
         # ==== ประกาศราคาแบบ "ส่งข้อความอย่างเดียว" (ไม่เปิดรอบ) ====
-        # ==== ประกาศราคาแบบ "ส่งข้อความอย่างเดียว" (ไม่เปิดรอบ) ====
-        m_announce = R_ANN.match(text)
+        # ใช้ text.strip() เพื่อให้ regex จับได้แม่นยำขึ้น
+        m_announce = R_ANN.match(text.strip())
 
         if m_announce and not re.match(r"^\s*o\b", text, re.IGNORECASE):
             if not is_admin(uid):
