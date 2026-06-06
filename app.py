@@ -4004,7 +4004,7 @@ if __name__ == "__main__":
     print(f"Starting Waitress on http://127.0.0.1:{PORT}")
     serve(
         app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=PORT,
         threads=16,
         connection_limit=200,
