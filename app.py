@@ -24,12 +24,12 @@ from contextlib import contextmanager
 R_PARSE_BET = re.compile(r"^([ลสยต])\s*[\/\s]*([0-9]+)$", re.IGNORECASE)
 R_O         = re.compile(r"^\s*o\b", re.IGNORECASE)
 R_ANN = re.compile(
-    r"^\s*([^\s].+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*[-/\s]*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
-    re.IGNORECASE | re.DOTALL
+    r"^\s*([^\s].+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
+    re.IGNORECASE
 )
 R_O_ANN = re.compile(
-    r"^\s*o\s+(.+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*[-/\s]*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
-    re.IGNORECASE | re.DOTALL
+    r"^\s*o\s+(.+?)\s*ล\s*(\d+)\s*[-/]\s*(\d+)\s*ย\s*(\d+)\s*[-/]\s*(\d+)\s*$",
+    re.IGNORECASE
 )
 R_CLEAR     = re.compile(r"^(clear|reset)\b", re.IGNORECASE)
 R_CM        = re.compile(r"^cm$", re.IGNORECASE)
@@ -44,6 +44,7 @@ R_ADMIN_ADD = re.compile(
 )
 R_ADMIN_DEL   = re.compile(r"^\s*(?:admin\s+del|ลบแอดมิน)\b", re.IGNORECASE)
 R_ADMIN_LIST  = re.compile(r"^\s*(?:admin\s+list|เช็คแอดมิน|รายชื่อแอดมิน)\s*$", re.IGNORECASE)
+R_ADMIN_CLEAR = re.compile(r"^\s*(?:admin\s+clear|ล้างแอดมิน)\s*$", re.IGNORECASE)
 R_CLOSE_TH    = re.compile(r"^(ปิดรอบ|หยุดแทง|ปิด)$")
 R_YCONFIRM    = re.compile(r"^(?:T/|/Y|Y)\s*$", re.IGNORECASE)
 R_CLEAR_PROFIT = re.compile(r"^ล้างกำไร$", re.IGNORECASE)
@@ -1379,9 +1380,9 @@ def text_bank():
 
             "📌 บั้งไฟสายฟ้า ⚡\n\n"
             
-            "🏳️ 020253266298\n"
-            "💰 สหกรณ์การเกษตร\n"
-            "💳 สุภาพร ศักดิ์ศรี\n\n"
+            "🏳️ 1423968792\n"
+            "💰 กสิกรไทย\n"
+            "💳 กิติพร ศักดิ์ศรี\n\n"
             "📌 เพื่อป้องกันมิจฉาชีพ ชื่อผู้ฝาก-ถอน ต้องเป็นชื่อเดียวกันเท่านั้น⚠️\n"
             "📌 กด C ดูไอดีตัวเองส่งให้แอดมินได้เลย\n"
         )
@@ -2616,6 +2617,19 @@ def remove_admin(uid):
     save_admins_persist()
     return True
 
+def clear_admins_to_env():
+    """ล้างแอดมินทั้งหมด แล้วเหลือเฉพาะที่กำหนดใน ENV (ADMIN_IDS)
+    คืน (removed_count, remaining_uids)"""
+    env_admins = _dedupe_admin_ids([
+        s.strip() for s in os.getenv("ADMIN_IDS", "").split(",") if s.strip()
+    ])
+    with _admin_ids_lock:
+        before = list(ADMIN_IDS)
+        ADMIN_IDS[:] = env_admins
+    save_admins_persist()
+    removed = [u for u in before if u not in env_admins]
+    return len(removed), env_admins
+
 # โหลดแอดมินที่เคยเพิ่มผ่านคำสั่งใน LINE ให้กลับมาหลัง restart/deploy
 load_admins_persist()
 
@@ -2750,19 +2764,12 @@ def on_message(event: MessageEvent):
 
         # [FIXED] ตรวจสอบ Cooldown ภายใน Lock
         if not is_admin(uid):
-            # [FIXED] เพิ่ม "C" (ตัวพิมพ์ใหญ่) เข้าไปใน whitelist ด้วย เพราะ user อาจพิมพ์ C ใหญ่
-            whitelist = {"add", "c", "C", "กต", "บช", "x", "xx", "x*", "ถอน", "วิธีเล่น", "วิธีการเล่น", "เล่น"}
+            whitelist = {"add", "c", "กต", "บช", "x", "xx", "x*", "ถอน", "วิธีเล่น", "วิธีการเล่น", "เล่น"}
             text_preview = text.lower()
-            # head เป็นตัวพิมพ์เล็กเสมอ ดังนั้น whitelist ต้องเป็นตัวพิมพ์เล็กด้วย หรือแปลง head เป็นแบบตรงกับ whitelist
             head = text_preview.split(" ", 1)[0] if text_preview else ""
-            # ถ้า text คือ "C" -> text.lower() คือ "c" -> head คือ "c"
-            # แต่เผื่อไว้ เช็คจาก text ตรงๆ หรือ head ตรงๆ
             scope_key = f"{uid}:{key}"
 
-            # แปลง whitelist ให้เป็น lower case ทั้งหมดเพื่อความชัวร์ (แม้ว่าใน set จะมีตัวเล็กอยู่แล้ว)
-            whitelist_lower = {w.lower() for w in whitelist}
-
-            if head not in whitelist_lower and text.strip().lower() not in whitelist_lower:
+            if head not in whitelist:
                 if not _should_reply_now(scope_key):
                     # เงียบ: ไม่ตอบและไม่ประมวลผลคำสั่ง เพื่อกันรัวจริง ๆ
                     return
@@ -2872,6 +2879,28 @@ def on_message(event: MessageEvent):
                 lines.append(f"{i}. {a_name}\n   ID: {a_uid}")
             lines.append(f"\nรวม {len(current_admins)} คน")
             safe_reply(event, TextSendMessage("\n".join(lines)))
+            return
+
+        # ===== Admin: clear (ล้างแอดมิน / admin clear) =====
+        if R_ADMIN_CLEAR.match(text):
+            if not is_admin(uid):
+                safe_reply(event, TextSendMessage("คำสั่งนี้ใช้ได้เฉพาะแอดมิน")); return
+            pin = _admin_auth_pin(text)
+            if ADMIN_PIN and not compare_digest(pin, ADMIN_PIN):
+                safe_reply(event, TextSendMessage("PIN ไม่ถูกต้อง")); return
+            removed_count, remaining = clear_admins_to_env()
+            if remaining:
+                rem_lines = "\n".join(f"  • {u}" for u in remaining)
+                msg = (
+                    f"🧹 ล้างแอดมินสำเร็จ ลบออก {removed_count} คน\n"
+                    f"✅ เหลือแอดมินจาก ENV ({len(remaining)} คน):\n{rem_lines}"
+                )
+            else:
+                msg = (
+                    f"🧹 ล้างแอดมินสำเร็จ ลบออก {removed_count} คน\n"
+                    "⚠️ ไม่มีแอดมินใน ENV — ระบบไม่มีแอดมินเลย"
+                )
+            safe_reply(event, TextSendMessage(msg))
             return
 
         # ===== Group ID (gid) =====
@@ -3240,8 +3269,7 @@ def on_message(event: MessageEvent):
 
 
 
-        # [FIXED] ใช้ strip() และตรวจสอบให้ครอบคลุมทั้ง C และ c รวมถึงกรณีที่อาจมีช่องว่าง
-        if re.match(r"^c\b", text.strip(), re.IGNORECASE) or text.strip().lower() == "c":
+        if re.match(r"^c\b", text, re.IGNORECASE):
             target_uid = first_mentioned_uid(event)
 
             # แอดมินดูบัตร/ID ของลูกค้าที่ถูกแท็ก
@@ -3256,7 +3284,7 @@ def on_message(event: MessageEvent):
                 safe_reply(event, flex_customer_card(st, u)); return
 
             # ลูกค้าดูบัตรของตัวเอง
-            if text.strip().lower() == "c":
+            if text.lower() == "c":
                 u = users.get(uid)
                 if not u:
                     safe_reply(event, TextSendMessage("พิมพ์ add เพื่อรับไอดีก่อน"))
@@ -3272,8 +3300,8 @@ def on_message(event: MessageEvent):
             safe_reply(event, TextSendMessage(rules_text())); return
 
         # ==== ประกาศราคาแบบ "ส่งข้อความอย่างเดียว" (ไม่เปิดรอบ) ====
-        # ใช้ text.strip() เพื่อให้ regex จับได้แม่นยำขึ้น
-        m_announce = R_ANN.match(text.strip())
+        # ==== ประกาศราคาแบบ "ส่งข้อความอย่างเดียว" (ไม่เปิดรอบ) ====
+        m_announce = R_ANN.match(text)
 
         if m_announce and not re.match(r"^\s*o\b", text, re.IGNORECASE):
             if not is_admin(uid):
