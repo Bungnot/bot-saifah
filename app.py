@@ -2885,9 +2885,6 @@ def on_message(event: MessageEvent):
         if R_ADMIN_CLEAR.match(text):
             if not is_admin(uid):
                 safe_reply(event, TextSendMessage("คำสั่งนี้ใช้ได้เฉพาะแอดมิน")); return
-            pin = _admin_auth_pin(text)
-            if ADMIN_PIN and not compare_digest(pin, ADMIN_PIN):
-                safe_reply(event, TextSendMessage("PIN ไม่ถูกต้อง")); return
             removed_count, remaining = clear_admins_to_env()
             if remaining:
                 rem_lines = "\n".join(f"  • {u}" for u in remaining)
